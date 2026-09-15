@@ -71,7 +71,7 @@ export default async function TagebuchPage() {
 
   const grouped: Record<string, EntryGroup> = {}
   for (const entry of entries ?? []) {
-    const p = entry.routine_prompts as { prompt_text: string; type: string; sort_order: number } | null
+    const p = entry.routine_prompts as unknown as { prompt_text: string; type: string; sort_order: number } | null
     if (!p) continue
     if (!grouped[entry.entry_date]) {
       grouped[entry.entry_date] = { date: entry.entry_date, morning: [], evening: [] }
