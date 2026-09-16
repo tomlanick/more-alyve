@@ -32,16 +32,31 @@ export default function PasswordResetPage() {
   const strength = getPasswordStrength(password)
 
   useEffect(() => {
-    // Supabase puts the recovery token in the URL hash — it handles the session automatically
     const supabase = createClient()
-    supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        setReady(true)
-      }
-    })
-    // Also check if user already has a session (token was already consumed)
+
+    // If the URL has a recovery token in the hash, Supabase exchanges it automatically.
+    // We just need to wait briefly for the exchange to complete, then show the form.
+    const hash = window.location.hash
+    if (hash.includes('type=recovery') || hash.includes('access_token')) {
+      // Give Supabase ~1s to process the hash token, then show the form regardless
+      setTimeout(() => setReady(true), 800)
+      return
+    }
+
+    // No hash — check if there's already an active session (e.g. page refreshed)
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) setReady(true)
+      if (session) {
+        setReady(true)
+      } else {
+        // Fallback: listen for state change
+        supabase.auth.onAuthStateChange((event) => {
+          if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
+            setReady(true)
+          }
+        })
+        // Final fallback after 3s — show form anyway, updateUser will validate
+        setTimeout(() => setReady(true), 3000)
+      }
     })
   }, [])
 
