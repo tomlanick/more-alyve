@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useState, useEffect } from 'react'
 import { Home, CheckSquare, BookOpen, User, Sun } from 'lucide-react'
 
 const navItems = [
@@ -14,6 +15,12 @@ const navItems = [
 
 export function BottomNav() {
   const pathname = usePathname()
+  const [optimisticPath, setOptimisticPath] = useState<string | null>(null)
+  const activePath = optimisticPath ?? pathname
+
+  useEffect(() => {
+    setOptimisticPath(null)
+  }, [pathname])
 
   return (
     <nav
@@ -42,11 +49,13 @@ export function BottomNav() {
         }}
       >
         {navItems.map(({ href, icon: Icon, label }) => {
-          const isActive = pathname === href || (href !== '/dashboard' && pathname.startsWith(href + '/'))
+          const isActive = activePath === href || (href !== '/dashboard' && activePath.startsWith(href + '/'))
           return (
             <Link
               key={href}
               href={href}
+              prefetch={true}
+              onClick={() => setOptimisticPath(href)}
               style={{
                 display: 'flex',
                 flexDirection: 'column',
