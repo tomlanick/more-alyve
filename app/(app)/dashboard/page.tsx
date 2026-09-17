@@ -65,6 +65,19 @@ export default async function DashboardPage() {
     .eq('id', user.id)
     .single()
 
+  // Aktuelle Phase laden (neueste ohne ended_at)
+  const { data: currentPhase } = await supabase
+    .from('user_phases')
+    .select('started_at')
+    .eq('user_id', user.id)
+    .is('ended_at', null)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  // Fallback: Beginn der App-Zeit, wenn noch keine Phase existiert
+  const phaseStart = currentPhase?.started_at ?? '2020-01-01'
+
   // Heutige aktive Habits laden
   const { data: habits } = await supabase
     .from('user_habits')
@@ -86,12 +99,12 @@ export default async function DashboardPage() {
   const completedChanges = changeCompletions?.length ?? 0
   const todayPoints = calculateCombinedScore(totalHabits, completedCount, totalChanges, completedChanges)
 
-  // Gesamtpunktestand (letzten 90 Tage) — inkl. points für Willensstärke
+  // Punkte ab Start der aktuellen Phase laden
   const { data: scores } = await supabase
     .from('daily_scores')
     .select('score_date, points')
     .eq('user_id', user.id)
-    .gte('score_date', new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+    .gte('score_date', phaseStart)
     .order('score_date')
 
   const totalScore = scores?.reduce((sum, s) => sum + s.points, 0) ?? 0
@@ -119,24 +132,20 @@ export default async function DashboardPage() {
   const morningDone = (morningEntries?.length ?? 0) >= morningIds.length && morningIds.length > 0
   const eveningDone = (eveningEntries?.length ?? 0) >= eveningIds.length && eveningIds.length > 0
 
-  // Tagebuch: Gesamtkonsistenz seit App-Start
-  // Zählt alle abgeschlossenen Sessions (Datum + Typ) geteilt durch (Tage seit Start × 2)
+  // Tagebuch: Konsistenz ab Start der aktuellen Phase
   const { data: allEntries } = await supabase
     .from('routine_entries')
     .select('entry_date, routine_prompts!inner(type)')
     .eq('user_id', user.id)
+    .gte('entry_date', phaseStart)
 
   const completedSessions = new Set<string>()
-  let firstDate: string | null = null
   for (const entry of allEntries ?? []) {
     const type = (entry.routine_prompts as unknown as { type: string })?.type
     if (type) completedSessions.add(`${entry.entry_date}_${type}`)
-    if (!firstDate || entry.entry_date < firstDate) firstDate = entry.entry_date
   }
-  const daysSinceStart = firstDate
-    ? Math.max(1, Math.floor((Date.now() - new Date(firstDate).getTime()) / (1000 * 60 * 60 * 24)) + 1)
-    : 1
-  const totalPossible = daysSinceStart * 2
+  const daysSincePhaseStart = Math.max(1, Math.floor((Date.now() - new Date(phaseStart).getTime()) / (1000 * 60 * 60 * 24)) + 1)
+  const totalPossible = daysSincePhaseStart * 2
   const journalPct = Math.min(100, Math.round((completedSessions.size / totalPossible) * 100))
 
   // Wochenauswertung für aktuelle Woche vorhanden?
