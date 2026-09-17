@@ -9,6 +9,9 @@ import { calculateCombinedScore } from '@/lib/scoring'
 
 const DAY_LABELS = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
 
+/** Wie viele vergangene Tage noch nachträglich bearbeitet werden können */
+const EDIT_WINDOW_DAYS = 3
+
 interface Habit {
   id: string
   name: string
@@ -29,12 +32,18 @@ function getTodayStr() {
   return toLocalDateStr(new Date())
 }
 
+/** Wie viele Tage liegt dateStr vor todayStr (negativ = Zukunft) */
+function daysDiff(dateStr: string, todayStr: string): number {
+  const d1 = new Date(dateStr + 'T12:00:00')
+  const d2 = new Date(todayStr + 'T12:00:00')
+  return Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24))
+}
+
 export default function LogbuchPage() {
   const router = useRouter()
   const todayStr = getTodayStr()
 
   const [offset, setOffset] = useState(0)
-  const [activeDates, setActiveDates] = useState<Set<string>>(new Set())
   const [habits, setHabits] = useState<Habit[]>([])
   const [completions, setCompletions] = useState<Record<string, Set<string>>>({})
   const [changes, setChanges] = useState<UserChange[]>([])
@@ -54,20 +63,17 @@ export default function LogbuchPage() {
       const cutoffStr = toLocalDateStr(cutoff)
 
       const [
-        { data: scores },
         { data: habitsData },
         { data: compData },
         { data: changesData },
         { data: changeCompData },
       ] = await Promise.all([
-        supabase.from('daily_scores').select('score_date, points').eq('user_id', user.id),
         supabase.from('user_habits').select('id, name, icon_emoji').eq('user_id', user.id).eq('is_active', true).order('sort_order'),
         supabase.from('habit_completions').select('user_habit_id, completed_date').eq('user_id', user.id).gte('completed_date', cutoffStr),
         supabase.from('user_changes').select('id, name, icon_emoji').eq('user_id', user.id).eq('is_active', true).order('sort_order'),
         supabase.from('change_completions').select('user_change_id, completed_date').eq('user_id', user.id).gte('completed_date', cutoffStr),
       ])
 
-      setActiveDates(new Set((scores ?? []).filter(s => s.points > -5).map(s => s.score_date)))
       setHabits(habitsData ?? [])
       setChanges(changesData ?? [])
 
@@ -90,6 +96,7 @@ export default function LogbuchPage() {
 
   const upsertScore = useCallback(async (
     supabase: ReturnType<typeof createClient>,
+    date: string,
     newHabitCompletions: Set<string>,
     newChangeCompletions: Set<string>,
   ) => {
@@ -98,13 +105,13 @@ export default function LogbuchPage() {
       changes.length, newChangeCompletions.size,
     )
     await supabase.from('daily_scores').upsert(
-      { user_id: userId, score_date: todayStr, points: score },
+      { user_id: userId, score_date: date, points: score },
       { onConflict: 'user_id,score_date' },
     )
-  }, [habits.length, changes.length, userId, todayStr])
+  }, [habits.length, changes.length, userId])
 
   const handleToggle = useCallback(async (habitId: string) => {
-    if (!userId || selectedDate !== todayStr) return
+    if (!userId || daysDiff(selectedDate, todayStr) > EDIT_WINDOW_DAYS || selectedDate > todayStr) return
     const supabase = createClient()
     const isCompleted = completions[selectedDate]?.has(habitId)
     if (isCompleted) {
@@ -116,7 +123,7 @@ export default function LogbuchPage() {
     if (isCompleted) updatedHabitComp.delete(habitId)
     else updatedHabitComp.add(habitId)
 
-    await upsertScore(supabase, updatedHabitComp, changeCompletions[selectedDate] ?? new Set())
+    await upsertScore(supabase, selectedDate, updatedHabitComp, changeCompletions[selectedDate] ?? new Set())
 
     setCompletions(prev => {
       const next = { ...prev }
@@ -126,7 +133,7 @@ export default function LogbuchPage() {
   }, [userId, selectedDate, completions, changeCompletions, todayStr, upsertScore])
 
   const handleToggleChange = useCallback(async (changeId: string) => {
-    if (!userId || selectedDate !== todayStr) return
+    if (!userId || daysDiff(selectedDate, todayStr) > EDIT_WINDOW_DAYS || selectedDate > todayStr) return
     const supabase = createClient()
     const isCompleted = changeCompletions[selectedDate]?.has(changeId)
     if (isCompleted) {
@@ -138,7 +145,7 @@ export default function LogbuchPage() {
     if (isCompleted) updatedChangeComp.delete(changeId)
     else updatedChangeComp.add(changeId)
 
-    await upsertScore(supabase, completions[selectedDate] ?? new Set(), updatedChangeComp)
+    await upsertScore(supabase, selectedDate, completions[selectedDate] ?? new Set(), updatedChangeComp)
 
     setChangeCompletions(prev => {
       const next = { ...prev }
@@ -149,13 +156,13 @@ export default function LogbuchPage() {
 
   // 7 days ending at (today - offset)
   const anchorDate = new Date()
-  anchorDate.setHours(12, 0, 0, 0) // Mittag: kein UTC-Offset-Problem
+  anchorDate.setHours(12, 0, 0, 0)
   anchorDate.setDate(anchorDate.getDate() - offset)
 
   const last7 = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(anchorDate)
     d.setDate(d.getDate() - (6 - i))
-    d.setHours(12, 0, 0, 0) // Mittag setzen, damit toLocalDateStr immer den richtigen Tag liefert
+    d.setHours(12, 0, 0, 0)
     return d
   })
 
@@ -167,9 +174,11 @@ export default function LogbuchPage() {
   const selectedCompletions = completions[selectedDate] ?? new Set()
   const selectedChangeCompletions = changeCompletions[selectedDate] ?? new Set()
   const isToday = selectedDate === todayStr
+  const selectedDiff = daysDiff(selectedDate, todayStr)
+  const isEditable = selectedDate <= todayStr && selectedDiff <= EDIT_WINDOW_DAYS
   const completedCount = habits.filter(h => selectedCompletions.has(h.id)).length
 
-  const selectedDateObj = new Date(selectedDate)
+  const selectedDateObj = new Date(selectedDate + 'T12:00:00')
   const selectedLabel = isToday
     ? 'Heute'
     : selectedDateObj.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })
@@ -211,7 +220,20 @@ export default function LogbuchPage() {
           const dateNum = date.getDate()
           const isSelected = dateStr === selectedDate
           const isFuture = dateStr > todayStr
-          const active = !isFuture && activeDates.has(dateStr)
+          const diff = daysDiff(dateStr, todayStr)
+          const editable = !isFuture && diff <= EDIT_WINDOW_DAYS
+          const hasComp = (completions[dateStr]?.size ?? 0) > 0 || (changeCompletions[dateStr]?.size ?? 0) > 0
+
+          // Drei Zustände:
+          // 1. hasComp → grüner Kreis mit ✓
+          // 2. !hasComp && editable → leerer Kreis (noch ausfüllbar)
+          // 3. !hasComp && !editable && !isFuture → grauer Kreis mit ✗ (verpasst)
+          // 4. isFuture → transparenter Kreis
+
+          const showGreen = !isFuture && hasComp
+          const showGrayX = !isFuture && !hasComp && !editable
+          const showEmpty = !isFuture && !hasComp && editable
+          const showFuture = isFuture
 
           return (
             <button
@@ -236,12 +258,13 @@ export default function LogbuchPage() {
               </span>
               <div style={{
                 width: 26, height: 26, borderRadius: '50%',
-                background: active ? '#00C853' : isFuture ? 'transparent' : 'rgba(255,255,255,0.18)',
-                border: isFuture ? '1.5px solid rgba(255,255,255,0.15)' : 'none',
+                background: showGreen ? '#00C853' : showGrayX ? 'rgba(255,255,255,0.18)' : showEmpty ? 'rgba(255,255,255,0.18)' : 'transparent',
+                border: showFuture ? '1.5px solid rgba(255,255,255,0.15)' : showEmpty ? '1.5px solid rgba(255,255,255,0.5)' : 'none',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: active ? '0 2px 10px rgba(0,200,83,0.45)' : 'none',
+                boxShadow: showGreen ? '0 2px 10px rgba(0,200,83,0.45)' : 'none',
               }}>
-                {active && <Check size={13} style={{ color: '#FFFFFF', strokeWidth: 3 }} />}
+                {showGreen && <Check size={13} style={{ color: '#FFFFFF', strokeWidth: 3 }} />}
+                {showGrayX && <X size={11} style={{ color: 'rgba(255,255,255,0.45)', strokeWidth: 2.5 }} />}
               </div>
             </button>
           )
@@ -269,8 +292,14 @@ export default function LogbuchPage() {
             </h2>
           </div>
           {!isToday && (
-            <span style={{ color: '#BBBBBB', fontSize: 11, fontWeight: 700, background: '#F0F0EE', borderRadius: 8, padding: '4px 10px' }}>
-              Vergangen
+            <span style={{
+              color: isEditable ? '#FF6B00' : '#BBBBBB',
+              fontSize: 11, fontWeight: 700,
+              background: isEditable ? 'rgba(255,107,0,0.08)' : '#F0F0EE',
+              border: isEditable ? '1px solid rgba(255,107,0,0.2)' : 'none',
+              borderRadius: 8, padding: '4px 10px',
+            }}>
+              {isEditable ? 'Nachträglich' : 'Vergangen'}
             </span>
           )}
         </div>
@@ -285,7 +314,7 @@ export default function LogbuchPage() {
             </div>
           ) : habits.map((habit) => {
             const done = selectedCompletions.has(habit.id)
-            const canToggle = isToday
+            const canToggle = isEditable
             return (
               <button
                 key={habit.id}
@@ -298,6 +327,7 @@ export default function LogbuchPage() {
                   cursor: canToggle ? 'pointer' : 'default',
                   textAlign: 'left', width: '100%',
                   transition: 'all 0.15s',
+                  opacity: !canToggle && !done ? 0.5 : 1,
                 }}
               >
                 <div style={{
@@ -328,7 +358,7 @@ export default function LogbuchPage() {
             )
           })}
 
-          {/* Was will ich ändern — Sektion */}
+          {/* Was will ich ändern */}
           {changes.length > 0 && (
             <>
               <div style={{ height: 1, background: '#E8E8E6', margin: '8px 0' }} />
@@ -337,7 +367,7 @@ export default function LogbuchPage() {
               </p>
               {changes.map((change) => {
                 const done = selectedChangeCompletions.has(change.id)
-                const canToggle = isToday
+                const canToggle = isEditable
                 return (
                   <button
                     key={change.id}
@@ -350,6 +380,7 @@ export default function LogbuchPage() {
                       cursor: canToggle ? 'pointer' : 'default',
                       textAlign: 'left', width: '100%',
                       transition: 'all 0.15s',
+                      opacity: !canToggle && !done ? 0.5 : 1,
                     }}
                   >
                     <div style={{

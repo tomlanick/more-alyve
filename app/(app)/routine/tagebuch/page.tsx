@@ -2,9 +2,10 @@ import { createClient } from '@/lib/supabase/server'
 import { getDevUser } from '@/lib/dev-auth'
 import { redirect } from 'next/navigation'
 import { AppHeader } from '@/components/layout/AppHeader'
-import { Sun, Moon } from 'lucide-react'
-import { getWeekStart, toISODateString } from '@/lib/utils'
+import { Sun, Moon, PlusCircle } from 'lucide-react'
+import { getWeekStart, toISODateString, todayISO } from '@/lib/utils'
 import { TagebuchCalendar } from '@/components/tagebuch/TagebuchCalendar'
+import Link from 'next/link'
 
 const LIFE_CATS = [
   { key: 'health_fitness',      label: 'Gesundheit', emoji: '💪' },
@@ -16,13 +17,6 @@ const LIFE_CATS = [
   { key: 'love_partnership',    label: 'Liebe',      emoji: '❤️' },
   { key: 'adventure_joy',       label: 'Freude',     emoji: '🎉' },
 ] as const
-
-function scoreColor(v: number) {
-  if (v >= 8) return '#00C853'
-  if (v >= 6) return '#7ED321'
-  if (v >= 4) return '#FFD60A'
-  return '#FF1C47'
-}
 
 export default async function TagebuchPage() {
   const supabase = await createClient()
@@ -96,6 +90,25 @@ export default async function TagebuchPage() {
     entryDates[day.date] = { morning: day.morning.length > 0, evening: day.evening.length > 0 }
   }
 
+  // Nachholbare Einträge: letzte 3 Tage mit fehlenden Sessions
+  const today = todayISO()
+  type NachholEntry = { date: string; label: string; missingMorning: boolean; missingEvening: boolean }
+  const nachholbar: NachholEntry[] = []
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date(today + 'T12:00:00')
+    d.setDate(d.getDate() - i)
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const dayEntries = entryDates[dateStr] ?? { morning: false, evening: false }
+    if (!dayEntries.morning || !dayEntries.evening) {
+      nachholbar.push({
+        date: dateStr,
+        label: d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' }),
+        missingMorning: !dayEntries.morning,
+        missingEvening: !dayEntries.evening,
+      })
+    }
+  }
+
   // Group days by week
   type Week = { weekStart: string; days: EntryGroup[]; ev: Record<string, number> | null }
   const weekMap: Record<string, Week> = {}
@@ -113,6 +126,63 @@ export default async function TagebuchPage() {
 
       <div style={{ maxWidth: 480, margin: '0 auto', padding: '16px 24px', paddingBottom: 100 }}>
         <TagebuchCalendar entryDates={entryDates} />
+
+        {/* Nachholbare Einträge der letzten 3 Tage */}
+        {nachholbar.length > 0 && (
+          <div style={{ background: '#FFFFFF', border: '1px solid rgba(255,107,0,0.2)', borderRadius: 20, overflow: 'hidden', marginTop: 16, marginBottom: 8 }}>
+            <div style={{ padding: '12px 16px 10px', background: 'rgba(255,107,0,0.05)', borderBottom: '1px solid rgba(255,107,0,0.12)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <PlusCircle size={14} style={{ color: '#FF6B00' }} />
+              <span style={{ color: '#FF6B00', fontWeight: 800, fontSize: 12, letterSpacing: '0.04em' }}>Noch nachholbar</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {nachholbar.map((item, idx) => (
+                <div
+                  key={item.date}
+                  style={{
+                    padding: '12px 16px',
+                    borderBottom: idx < nachholbar.length - 1 ? '1px solid #F4F4F2' : 'none',
+                  }}
+                >
+                  <p style={{ color: '#111', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{item.label}</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {item.missingMorning && (
+                      <Link
+                        href={`/routine/morgen?date=${item.date}`}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 5,
+                          background: 'rgba(255,149,0,0.08)', border: '1px solid rgba(255,149,0,0.25)',
+                          borderRadius: 8, padding: '6px 12px',
+                          color: '#FF9500', fontSize: 12, fontWeight: 700, textDecoration: 'none',
+                          flex: item.missingEvening ? 1 : undefined,
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Sun size={12} />
+                        Morgen eintragen
+                      </Link>
+                    )}
+                    {item.missingEvening && (
+                      <Link
+                        href={`/routine/abend?date=${item.date}`}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 5,
+                          background: 'rgba(123,97,255,0.08)', border: '1px solid rgba(123,97,255,0.25)',
+                          borderRadius: 8, padding: '6px 12px',
+                          color: '#7B61FF', fontSize: 12, fontWeight: 700, textDecoration: 'none',
+                          flex: item.missingMorning ? 1 : undefined,
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Moon size={12} />
+                        Abend eintragen
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {weeks.length === 0 ? (
           <div style={{ background: '#FFFFFF', border: '1px solid #EBEBEA', borderRadius: 20, padding: '40px 24px', textAlign: 'center', marginTop: 20 }}>
@@ -133,7 +203,7 @@ export default async function TagebuchPage() {
                     Woche ab {weekLabel}
                   </p>
 
-                  {/* Lebensglück card — blue sky */}
+                  {/* Lebensglück card */}
                   {week.ev && avg !== null && (
                     <div style={{
                       backgroundImage: 'url(/blaumitwolken25.png)',
@@ -142,8 +212,6 @@ export default async function TagebuchPage() {
                       borderRadius: 20, padding: '20px 20px 18px', marginBottom: 12,
                       position: 'relative', overflow: 'hidden', minHeight: 150,
                     }}>
-
-                      {/* Content */}
                       <div style={{ position: 'relative' }}>
                         <p style={{ color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 4 }}>
                           Lebensglück
